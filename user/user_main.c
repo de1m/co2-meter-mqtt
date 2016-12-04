@@ -20,7 +20,7 @@
 #define DEBUG
 
 #define PPMMAX 2400
-#define PPMMIN 600
+#define PPMMIN 400
 
 #define PWM_2_OUT_IO_MUX PERIPHS_IO_MUX_GPIO4_U //R - Red
 #define PWM_2_OUT_IO_NUM 4
@@ -219,21 +219,6 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 			//os_printf("MQTT ONLY\n");
 		#endif
 
-		/*const char buffer[128];
-		os_sprintf(buffer, "{'id': '%s', 'ppm': '%d', 'err': '%d'}", mqConf.clientid, co2value, err);
-
-	    const char *p1 = strstr(buffer, "{");
-	    const char *p2 = strstr(p1, "}")+1;
-
-	    size_t len = p2-p1;
-	    char *res = (char*)os_malloc(sizeof(char)*(len+1));
-	    strncpy(res, p1, len);
-	    res[len] = '\0';
-
-		#ifdef DEBUG
-	    	os_printf("mIsConnected : %d\n", mIsConnected);
-		#endif*/
-
 		int len = 0;
 
 		if(co2value < 1000){
@@ -286,6 +271,8 @@ void ICACHE_FLASH_ATTR startCo2only(void){
 	#ifdef DEBUG
 		os_printf("(17) - Read co2 interval setting: %d\n", co2Sett.interval);
 	#endif
+
+	pwm_write(0,50);
 
     onlyCO2 = 1;
 
@@ -502,6 +489,11 @@ static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args)
 	#endif
 }
 
+void ICACHE_FLASH_ATTR sta_send_cb(void *arg){
+	os_printf("SEND DATA WAS OK\n");
+	espconn_disconnect(arg);
+}
+
 static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned short len){
 
 	struct espconn *ptrespconn = (struct espconn *)arg;
@@ -515,14 +507,12 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 
 	if(os_strncmp(data, "GET / ", 6) == 0){
-
 		espconn_send(ptrespconn, (uint8 *)formHtml, os_strlen(formHtml));
-		espconn_disconnect(ptrespconn);
 	}
 
 	if(os_strncmp(data, "GET /?int", 9) == 0){
-		char wifiON[2];
 
+		char wifiON[2];
 		char tempAdvcd[2];
 		char tempppmmin[4];
 		char temppmmax[4];
@@ -535,8 +525,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			//not set
 			ledConf.ppmmin = PPMMIN;
 			ledConf.ppmmax = PPMMAX;
-
-			//os_printf("ADVAN NOT SET\n");
 
 		} else {
 
@@ -575,8 +563,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 		getValueOfKey("brc", sizeof(tempbrit), data, tempbrit);
 		ledConf.brit = atoi(tempbrit);
 
-		//os_printf("BRIT: %d\n", ledConf.brit);
-
 		//save led config
 		spi_flash_erase_sector(LEDCONFADDR);
 		unsigned int l = spi_flash_write((LEDCONFADDR*SPI_FLASH_SEC_SIZE), (uint32*)&ledConf, sizeof(struct ledcnf));
@@ -584,18 +570,17 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			os_printf("Status of save led setting: %d\n", l);
 		#endif
 
-		getValueOfKey("wS", 2, data, wifiON);
-		os_printf("WIFION: %s\n", wifiON);
+		getValueOfKey("wS", 2, data, wifiON); //get value of wifi&mqtt checkbox
 
-		if(wifiON[0] == '\0') {
+		if(wifiON[0] == '\0') { //check if wifi & mqtt settings are activated
 			//wifi is not set
 
 			#ifdef DEBUG
 				os_printf("CO2 only\n");
 			#endif
 
-			getValueOfKey("int", sizeof(tempInterval), data, tempInterval);
-			if(tempInterval[0] == '\0'){
+			getValueOfKey("int", sizeof(tempInterval), data, tempInterval); // refresh interval
+			if(tempInterval[0] == '\0'){ //if 0 set to default - 120sec.
 				//set default
 				co2Conf.interval = 120;
 			} else {
@@ -607,9 +592,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				os_printf("CO2 Interval set to: %ld sec.\n", co2Conf.interval);
 			#endif
 
-			//send
-			sint8 sendhtml = espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
-
 			//unsigned int getMqttSett = writeCO2Setting(&co2Conf);
 			spi_flash_erase_sector(CO2CONFADDR);
 			unsigned int c = spi_flash_write(CO2CONFADDR*SPI_FLASH_SEC_SIZE, (uint32*)&co2Conf, sizeof(struct co2sen));
@@ -617,23 +599,13 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				os_printf("con2conf saved: %d\n", c);
 			#endif
 
-			if(sendhtml == 0){
-				espconn_disconnect(ptrespconn);
+			int wstat = wipe_flash(DELWIFIMQTTCONF);
+			if(wstat == 0){
+				os_printf("Wipe MQTT and Wifi config successfull\n");
+				startMode();
 			} else {
-				if(sendhtml == ESPCONN_MEM){
-					os_printf("Send clientHtml: Out of Memory\n");
-				}
-				if(sendhtml == ESPCONN_ARG){
-					os_printf("Send clientHtml: illegal argument\n");
-				}
-				if(sendhtml == ESPCONN_MAXNUM){
-					os_printf("Send clientHtml: sending data is full\n");
-				}
+				os_printf("Wipe MQTT and Wifi config error\n");
 			}
-
-			wipe_flash(DELWIFIMQTTCONF);
-
-			startMode();
 
 		} else {
 			//wifi is set
@@ -641,10 +613,10 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				os_printf("Wifi and MQTT was set\n");
 			#endif
 
-			char tempQOS[1];
-			char tempport[5];
-			char tempDhcp[2];
-			char tempAuth[2];
+			char tempQOS[1]; // temp char for MQTT QoS
+			char tempport[5]; // temp char for MQTT Port
+			char tempDhcp[2]; // temp char for dhcp setting (on/off)
+			char tempAuth[2]; // temp char for auth setting (on/off)
 
 
 			getValueOfKey("wf", sizeof(clientConf.ssid), data, clientConf.ssid);
@@ -721,9 +693,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				mqConf.qos = atoi(tempQOS);
 			}
 
-			//send
-			sint8 sendhtml = espconn_send(ptrespconn, (uint8 *)clientHtml, os_strlen(clientHtml));
-
 			//save wifi config
 			spi_flash_erase_sector(WIFICONFADDR);
 			unsigned int w = spi_flash_write((WIFICONFADDR*SPI_FLASH_SEC_SIZE),(uint32*)&clientConf, sizeof(struct wCLIENTCFG));
@@ -739,21 +708,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			#ifdef DEBUG
 				os_printf("Status of save mqtt setting: %d\n", m);
 			#endif
-
-			if(sendhtml == 0){
-				espconn_disconnect(ptrespconn);
-				//os_printf("5555555555555555\n");
-			} else {
-				if(sendhtml == ESPCONN_MEM){
-					os_printf("Send clientHtml: Out of Memory\n");
-				}
-				if(sendhtml == ESPCONN_ARG){
-					os_printf("Send clientHtml: illegal argument\n");
-				}
-				if(sendhtml == ESPCONN_MAXNUM){
-					os_printf("Send clientHtml: sending data is full\n");
-				}
-			}
 
 			wipe_flash(DELCO2CONF);
 
@@ -801,13 +755,15 @@ char* replace(const char *str, const char *oldstr, const char *newstr, int *coun
 
 static void ICACHE_FLASH_ATTR sta_connect_cb(void *arg){
 
-	struct espconn *pesp_conn = (struct espconn *)arg;
+	struct espconn *pesp_conn = arg;
 
 	#ifdef DEBUG
 		os_printf("Client connected\n");
 	#endif
 
+	espconn_regist_sentcb(pesp_conn, sta_send_cb);
 	espconn_regist_recvcb(pesp_conn, sta_mode_recv_cb);
+
 
 	#ifdef DEBUG
     	espconn_regist_reconcb(pesp_conn, sta_mode_recon_cb);
