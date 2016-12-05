@@ -126,6 +126,12 @@ void ICACHE_FLASH_ATTR WIFI_Connect(WifiCallback cb)
 	if(iptrue == 1 && subnettrue == 1 && gwtrue == 1){
 			//char ip is not ip
 			os_printf("IP or netmask or GW is not ip\n");
+			//write to display - E001;
+			writeNum(0b10011110, 1); // - E
+			writeNum(0,0);
+			writeNum(0,0);
+			writeNum(2,0);
+			latch();
 		} else {
 	    	//set static ip
 	    	struct ip_info ipact;

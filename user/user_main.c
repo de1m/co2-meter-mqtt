@@ -498,6 +498,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 	struct espconn *ptrespconn = (struct espconn *)arg;
 	char tempInterval[32];
+	int errCount = 0;
 
 	#ifdef DEBUG
 		os_printf("###### DStart ######\n");
@@ -566,9 +567,24 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 		//save led config
 		spi_flash_erase_sector(LEDCONFADDR);
 		unsigned int l = spi_flash_write((LEDCONFADDR*SPI_FLASH_SEC_SIZE), (uint32*)&ledConf, sizeof(struct ledcnf));
-		#ifdef DEBUG
-			os_printf("Status of save led setting: %d\n", l);
-		#endif
+
+		if(l != SPI_FLASH_RESULT_OK){
+			#ifdef DEBUG
+				os_printf("Error write Led config to flash\n");
+				os_printf("TEST1: %d", l);
+			#endif
+
+			pwm_write(50,0);
+
+			//write to display - E001;
+			writeNum(0b10011110, 1); // - E
+			writeNum(0,0);
+			writeNum(0,0);
+			writeNum(3,0);
+			latch();
+
+			errCount++;
+		}
 
 		getValueOfKey("wS", 2, data, wifiON); //get value of wifi&mqtt checkbox
 
@@ -579,12 +595,13 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				os_printf("CO2 only\n");
 			#endif
 
-			getValueOfKey("int", sizeof(tempInterval), data, tempInterval); // refresh interval
-			if(tempInterval[0] == '\0'){ //if 0 set to default - 120sec.
-				//set default
-				co2Conf.interval = 120;
-			} else {
+			if(getValueOfKey("int", sizeof(tempInterval), data, tempInterval) > 0){ // refresh interval
+				os_printf("CUSTOM\n");
 				co2Conf.interval = atoi(tempInterval);
+			} else {
+				//set default
+				os_printf("DEFAULT\n");
+				co2Conf.interval = 120;
 			}
 			co2Conf.configsaved = 1;
 
@@ -595,9 +612,24 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			//unsigned int getMqttSett = writeCO2Setting(&co2Conf);
 			spi_flash_erase_sector(CO2CONFADDR);
 			unsigned int c = spi_flash_write(CO2CONFADDR*SPI_FLASH_SEC_SIZE, (uint32*)&co2Conf, sizeof(struct co2sen));
-			#ifdef DEBUG
-				os_printf("con2conf saved: %d\n", c);
-			#endif
+
+			if(c != SPI_FLASH_RESULT_OK){
+				#ifdef DEBUG
+					os_printf("Error write co2 sen config to flash\n");
+					os_printf("TEST2: %d", c);
+				#endif
+
+				pwm_write(0,50);
+
+				//write to display - E001;
+				writeNum(0b10011110, 1); // - E
+				writeNum(0,0);
+				writeNum(0,0);
+				writeNum(3,0);
+				latch();
+
+				errCount++;
+			}
 
 			int wstat = wipe_flash(DELWIFIMQTTCONF);
 			if(wstat == 0){
@@ -622,9 +654,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			getValueOfKey("wf", sizeof(clientConf.ssid), data, clientConf.ssid);
 			getValueOfKey("ps", sizeof(clientConf.password), data, clientConf.password);
 
-
 			getValueOfKey("ipc", sizeof(tempDhcp), data, tempDhcp);
-
 
 			if(tempDhcp[0] == '\0'){
 				clientConf.dhcp = 1;
@@ -646,11 +676,9 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			getValueOfKey("mId", sizeof(mqConf.clientid), data, mqConf.clientid);
 			getValueOfKey("mad", sizeof(mqConf.server), data, mqConf.server);
 			getValueOfKey("mprt", sizeof(tempport), data, tempport);
-			//os_printf("222222222222222\n");
 			getValueOfKey("mtpc", sizeof(mqConf.topic), data, mqConf.topic); // ############## convert from html string %2f
 			getValueOfKey("mqs", sizeof(tempQOS), data, tempQOS);
 			getValueOfKey("int", sizeof(tempInterval), data, tempInterval);
-			//os_printf("333333333333333333\n");
 			getValueOfKey("ath", sizeof(tempAuth), data, tempAuth);
 			getValueOfKey("mus", sizeof(mqConf.user), data, mqConf.user);
 			getValueOfKey("mps", sizeof(mqConf.password), data, mqConf.password);
@@ -673,8 +701,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				mqConf.sendinterval = atoi(tempInterval);
 			}
 
-			//os_printf("4444444444444444444444\n");
-
 			//convert html string, "%2F" to "/"
 			char *topicstr;
 			int rpl = 0;
@@ -696,22 +722,66 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			//save wifi config
 			spi_flash_erase_sector(WIFICONFADDR);
 			unsigned int w = spi_flash_write((WIFICONFADDR*SPI_FLASH_SEC_SIZE),(uint32*)&clientConf, sizeof(struct wCLIENTCFG));
+			if(w != SPI_FLASH_RESULT_OK){
+				#ifdef DEBUG
+					os_printf("Error write wifi config to flash\n");
+					os_printf("TEST3: %d", w);
+				#endif
 
-			#ifdef DEBUG
-				os_printf("Status of save wifi setting: %d\n", w);
-			#endif
+				pwm_write(0,50);
+
+				//write to display - E001;
+				writeNum(0b10011110, 1); // - E
+				writeNum(0,0);
+				writeNum(0,0);
+				writeNum(3,0);
+				latch();
+
+				errCount++;
+			}
 
 			//save mqtt config
 			spi_flash_erase_sector(MQTTCONFADDR);
 			unsigned int m = spi_flash_write((MQTTCONFADDR*SPI_FLASH_SEC_SIZE),(uint32*)&mqConf, sizeof(struct MQTTServer));
+			if(m != SPI_FLASH_RESULT_OK){
+				#ifdef DEBUG
+					os_printf("Error write mqtt config to flash\n");
+					os_printf("TEST4: %d", m);
+				#endif
+
+				pwm_write(0,50);
+
+				//write to display - E001;
+				writeNum(0b10011110, 1); // - E
+				writeNum(0,0);
+				writeNum(0,0);
+				writeNum(3,0);
+				latch();
+
+				errCount++;
+			}
+
 
 			#ifdef DEBUG
 				os_printf("Status of save mqtt setting: %d\n", m);
 			#endif
 
-			wipe_flash(DELCO2CONF);
+			int wf = wipe_flash(DELCO2CONF);
+			if(wf != 0){
+				#ifdef DEBUG
+					os_printf("Wipe co2 config error \n");
+				#endif
+				pwm_write(0,50);
+			}
 
-			startMode();
+			if(errCount > 0){
+				#ifdef DEBUG
+					os_printf("Err Count: %d\n", errCount);
+				#endif
+			} else {
+				errCount = 0;
+				startMode();
+			}
 
 		}
 	}

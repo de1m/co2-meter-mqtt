@@ -1,0 +1,5 @@
+Error codes:
+
+E001 - CO2 Check sum not correct
+E002 - Static IP,DNS,GW not correct
+E003 - Error write/wipe flash 
