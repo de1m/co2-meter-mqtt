@@ -621,6 +621,9 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				int wstat = wipe_flash(DELWIFIMQTTCONF);
 				if(wstat == 0){
 					os_printf("Wipe MQTT and Wifi config successfull\n");
+
+					espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
+
 					startMode();
 				} else {
 					os_printf("Wipe MQTT and Wifi config error\n");
@@ -966,7 +969,7 @@ LOCAL void input_intr_handler(void *arg)
 void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
 {
 	ETS_GPIO_INTR_DISABLE();
-	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_NEGEDGE);
+	//gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_NEGEDGE);
 	ETS_GPIO_INTR_ENABLE();
     if(wipe_flash(DELALLCONF) == 0){
 
