@@ -75,6 +75,10 @@ os_timer_t errorInputRed; //if error in html config input - red led on for 3 sec
 #define user_procTaskQueueLen    1
 os_event_t user_procTaskQueue[user_procTaskQueueLen];
 
+//reset vars
+uint32_t timecount;
+int timepressed = 0;
+
 //Main code function
 static void ICACHE_FLASH_ATTR loop(os_event_t *events) {
 
@@ -621,9 +625,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				int wstat = wipe_flash(DELWIFIMQTTCONF);
 				if(wstat == 0){
 					os_printf("Wipe MQTT and Wifi config successfull\n");
-
-					espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
-
 					startMode();
 				} else {
 					os_printf("Wipe MQTT and Wifi config error\n");
@@ -941,7 +942,7 @@ void BtnInit() {
 	// Очистка статуса
 	GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(2));
 	// Вкл.прерываний
-	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_NEGEDGE);
+	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_ANYEDGE);
 	// Вкл.глоб.прерываний
 	ETS_GPIO_INTR_ENABLE();
 	// Таймер
@@ -962,29 +963,53 @@ LOCAL void input_intr_handler(void *arg)
 	// Вкл.прерываний
 	ETS_GPIO_INTR_ENABLE();
 	// Установка таймера
-	os_timer_arm(&DebounceTimer, 200, 0);
+	os_timer_arm(&DebounceTimer, 40, 0);
 }
 
 // Выполняется в случае нажатия кнопки CONFMODE
 void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
 {
 	ETS_GPIO_INTR_DISABLE();
-	//gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_NEGEDGE);
+	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_ANYEDGE);
 	ETS_GPIO_INTR_ENABLE();
-    if(wipe_flash(DELALLCONF) == 0){
 
-    	os_timer_disarm(&ppmMaxLed);
+	if(timepressed){
+		timepressed = 0;
+		uint32 count = system_get_time() - timecount;
 
-    	//write init display
-    	writeNum(0b11101100, 1); //n
-    	writeNum(0,0); // 0
-    	writeNum(0b10011100, 1); //c
-    	writeNum(0b10001110, 1); //f
-    	latch();
+		#ifdef DEBUG
+			os_printf("DIFF: %d us\n", count);
+		#endif
 
-    	os_timer_disarm(&SendDataTimer);
-    	startMode();
-    }
+		if(count >= 1000000){
+			#ifdef DEBUG
+				os_printf("DIFF: %d us\nRESET\n", count);
+			#endif
+		    if(wipe_flash(DELALLCONF) == 0){
+
+		    	os_timer_disarm(&ppmMaxLed);
+		    	os_timer_disarm(&SendDataTimer);
+
+		    	os_printf("\n");
+
+		    	//write init display
+		    	writeNum(0b11101100, 1); //n
+		    	writeNum(0,0); // 0
+		    	writeNum(0b10011100, 1); //c
+		    	writeNum(0b10001110, 1); //f
+		    	latch();
+
+		    	startMode();
+		    }
+		}
+
+	} else {
+		timepressed = 1;
+		timecount = system_get_time();
+		#ifdef DEBUG
+			os_printf("SYSTEMTIME: %d\n", timecount);
+		#endif
+	}
 }
 
 int ICACHE_FLASH_ATTR wipe_flash(int delconf){
@@ -1038,6 +1063,8 @@ int ICACHE_FLASH_ATTR wipe_flash(int delconf){
 			return 1;
 		}
 	}
+
+	return 0;
 }
 
 void ICACHE_FLASH_ATTR startMode(void){
