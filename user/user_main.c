@@ -7,14 +7,13 @@
 #include <spi_flash.h>
 #include "user_interface.h"
 #include "config.h"
-#include "../mqtt/include/mqtt.h"
+#include "mqtt.h"
 #include "wifi.h"
 #include "driver/uart.h"
 #include <espconn.h>
 #include "eagle_soc.h"
 #include "fast_pwm.c"
 #include "http.h"
-#include "dnsAns.c"
 
 #define BTN_CONFIG_GPIO 0
 #define DEBUG
@@ -22,6 +21,7 @@
 #define PPMMAX 2400
 #define PPMMIN 400
 
+//PWM Channels for LED (RG) //////////
 #define PWM_2_OUT_IO_MUX PERIPHS_IO_MUX_GPIO4_U //R - Red
 #define PWM_2_OUT_IO_NUM 4
 #define PWM_2_OUT_IO_FUNC FUNC_GPIO4
@@ -33,14 +33,16 @@
 #define PWM_CHANNEL 2
 int ledinvert = 1; //1 = (+); 0 = (-)
 
-uint32 duty[] = {0};
-uint32 freq = 65536;
-uint32 pwmcurr[2] = {0,0};
-
 uint32 io_info[][3] = {
   {PWM_2_OUT_IO_MUX, PWM_2_OUT_IO_FUNC, PWM_2_OUT_IO_NUM},
   {PWM_3_OUT_IO_MUX, PWM_3_OUT_IO_FUNC, PWM_3_OUT_IO_NUM}
 };
+
+/////////////////////////////////////
+
+uint32 duty[] = {0};
+uint32 freq = 65536;
+uint32 pwmcurr[2] = {0,0};
 
 MQTT_Client mqttClient;
 MQTT_Client *clientptr;
@@ -48,10 +50,10 @@ MQTT_Client *clientptr;
 static struct espconn esp_conn;
 
 static esp_tcp esptcp;
-struct wCLIENTCFG clientConf;
-struct MQTTServer mqConf;
-struct co2sen co2Conf;
-struct ledcnf ledConf;
+struct wCLIENTCFG clientConf; //wifi config stuct
+struct MQTTServer mqConf; //mqtt server config struct
+struct co2sen co2Conf; //co2 sensor config struct
+struct ledcnf ledConf; //led RG config struct
 
 uint32 sendinterval;
 char topic[128];
@@ -59,6 +61,7 @@ int onlyCO2 = 0;
 int mIsConnected = 0;
 int setLEDRed = 0;
 int ledRED = 0;
+int setLedOra = 0;
 
 //for receive value from co2 sensor
 const char cmd[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79}; //request
@@ -70,6 +73,10 @@ os_timer_t DebounceTimer; //reset button debounce timer
 os_timer_t SendDataTimer; //data send (MQTT) timer
 os_timer_t ppmMaxLed; //if ppm > max value, then start this timer( for blink red led)
 os_timer_t errorInputRed; //if error in html config input - red led on for 3 sec
+os_timer_t tcpDisconnect; //call espconn_disconnect after 20ms
+os_timer_t wifiConnCheck; //check connection to wifi
+os_timer_t wifiErrorLedTimer; // blink led orange if wifi connection error
+
 
 #define user_procTaskPrio        0
 #define user_procTaskQueueLen    1
@@ -184,7 +191,9 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 		    	os_timer_arm(&ppmMaxLed, 200, 1);
 
 		    	ledRED = 1;
-		    	os_printf("SET ledRED to: %d\n", ledRED);
+				#ifdef DEBUG
+					os_printf("SET ledRED to: %d\n", ledRED);
+				#endif
 
 	    	} else {
 
@@ -192,7 +201,9 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 	    		ledG = 255-ledR;
 
 	    		ledRED = 0;
-	    		os_printf("SET ledRED to: %d\n", ledRED);
+				#ifdef DEBUG
+					os_printf("SET ledRED to: %d\n", ledRED);
+				#endif
 	    	}
 	    }
 
@@ -206,7 +217,9 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 
 		if(ledRED == 0){
 			pwm_write(ledR,ledG);
-			os_printf("SET ledRED to: %d\nDISABLE ppmMaxLed\n", ledRED);
+			#ifdef DEBUG
+				os_printf("SET ledRED to: %d\nDISABLE ppmMaxLed\n", ledRED);
+			#endif
 			os_timer_disarm(&ppmMaxLed);
 		}
 
@@ -244,6 +257,8 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 	    	} else {
 	    		MQTT_Publish(clientptr, topic, buffer, len, mqConf.qos, 0);
 	    	}
+	    } else {
+	    	os_printf("mIsConnected: %d\n", mIsConnected);
 	    }
 
 	    err = 0;
@@ -366,10 +381,15 @@ void ICACHE_FLASH_ATTR startClient(void){
 
 	WIFI_Connect(wifiConnectCb);
 
+	os_timer_disarm(&wifiConnCheck);
+	os_timer_setfn(&wifiConnCheck, &check_wifi_stat, 0);
+	os_timer_arm(&wifiConnCheck, 10*1000, 1); //10sec
+
     //Start os task
     system_os_task(loop, user_procTaskPrio,user_procTaskQueue, user_procTaskQueueLen);
     system_os_post(user_procTaskPrio, 0, 0 );
 	initSendTimer();
+
 }
 
 static void ICACHE_FLASH_ATTR wifiConnectCb(uint8_t status)
@@ -469,6 +489,63 @@ static void ICACHE_FLASH_ATTR mqttConnectedCb(uint32_t *args)
 
 }
 
+void ICACHE_FLASH_ATTR blink_conf_err_led(void *arg){
+	//sed led to red;
+	if(setLedOra == 0){
+		pwm_write(50,50);
+		setLedOra = 1;
+	} else {
+		pwm_write(50,10);
+		setLedOra = 0;
+	}
+
+}
+
+void ICACHE_FLASH_ATTR check_wifi_stat(void *arg){
+	uint8 wstat = wifi_station_get_connect_status();
+
+	if(wstat == STATION_GOT_IP){ //ok
+		os_timer_disarm(&wifiErrorLedTimer);
+	} else {
+
+		#ifdef DEBUG
+			os_printf("Error wifi connection\n");
+		#endif
+
+		//write to display - E005;
+		writeNum(0b10011110, 1); // - E
+		writeNum(0,0);
+		writeNum(0,0);
+		writeNum(5,0);
+		latch();
+
+		os_timer_disarm(&wifiErrorLedTimer);
+		os_timer_setfn(&wifiErrorLedTimer, &blink_conf_err_led, 0);
+		os_timer_arm(&wifiErrorLedTimer, 200, 1); //2sec
+	}
+
+	if(mIsConnected == 0){
+		#ifdef DEBUG
+			os_printf("Mqtt server not connected\n");
+		#endif
+
+		//write to display - E005;
+		writeNum(0b10011110, 1); // - E
+		writeNum(0,0);
+		writeNum(0,0);
+		writeNum(6,0);
+		latch();
+
+		os_timer_disarm(&wifiErrorLedTimer);
+		os_timer_setfn(&wifiErrorLedTimer, &blink_conf_err_led, 0);
+		os_timer_arm(&wifiErrorLedTimer, 200, 1); //2sec
+
+	} else {
+		os_timer_disarm(&wifiErrorLedTimer);
+		mIsConnected = 1;
+	}
+}
+
 void ICACHE_FLASH_ATTR send_data_cb(void *arg){
 
 	//send requiest to co2 sensor
@@ -486,7 +563,7 @@ static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args){
 	#endif
 }
 
-static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args)
+static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32 *args)
 {
 	MQTT_Client* client = (MQTT_Client*)args;
 	#ifdef DEBUG
@@ -494,10 +571,35 @@ static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args)
 	#endif
 }
 
+void ICACHE_FLASH_ATTR tcpDisconnectCb(void *arg){
+
+	#ifdef DEBUG
+		os_printf("SEND DATA WAS OK2\n");
+	#endif
+	espconn_disconnect(arg);
+
+	startMode();
+}
+
 void ICACHE_FLASH_ATTR sta_send_cb(void *arg){
-	os_printf("SEND DATA WAS OK\n");
+
+	#ifdef DEBUG
+		os_printf("SEND DATA WAS OK\n");
+	#endif
 	espconn_disconnect(arg);
 }
+
+void ICACHE_FLASH_ATTR sta_noWifi_cb(void *arg){
+
+	#ifdef DEBUG
+		os_printf("START DISCONNECT TIMEOUT\n");
+	#endif
+
+	os_timer_disarm(&tcpDisconnect);
+	os_timer_setfn(&tcpDisconnect, &tcpDisconnectCb, 0);
+	os_timer_arm(&tcpDisconnect, 20, 0);
+}
+
 
 void ICACHE_FLASH_ATTR errorConfigRed(void *arg){
 
@@ -514,7 +616,9 @@ void ICACHE_FLASH_ATTR errorConfigRed(void *arg){
 
 static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned short len){
 
-	struct espconn *ptrespconn = (struct espconn *)arg;
+	//struct espconn *ptrespconn = (struct espconn *)arg;
+	struct espconn *ptrespconn = arg;
+
 	char tempInterval[32];
 	int errCount = 0;
 
@@ -541,8 +645,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			//not set
 			ledConf.ppmmin = PPMMIN;
 			ledConf.ppmmax = PPMMAX;
-
-			ledConf.brit = 2;
 
 		} else {
 
@@ -572,12 +674,12 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				}
 			}
 
-			if(getValueOfKey("brc", sizeof(tempbrit), data, tempbrit) <= 0){
-				ledConf.brit = 2;
-			} else {
-				ledConf.brit = atoi(tempbrit);
-			}
+		}
 
+		if(getValueOfKey("brc", sizeof(tempbrit), data, tempbrit) <= 0){
+			ledConf.brit = 2;
+		} else {
+			ledConf.brit = atoi(tempbrit);
 		}
 
 		//save led config
@@ -624,8 +726,13 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 				int wstat = wipe_flash(DELWIFIMQTTCONF);
 				if(wstat == 0){
-					os_printf("Wipe MQTT and Wifi config successfull\n");
-					startMode();
+					#ifdef DEBUG
+						os_printf("Wipe MQTT and Wifi config successfull\n");
+					#endif
+
+					espconn_regist_sentcb(ptrespconn, sta_noWifi_cb);
+					espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
+
 				} else {
 					os_printf("Wipe MQTT and Wifi config error\n");
 
@@ -673,7 +780,9 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 			if(getValueOfKey("ipc", sizeof(tempDhcp), data, tempDhcp) <= 0){
 				clientConf.dhcp = 1;
-				os_printf("DHCP is set\n");
+				#ifdef DEBUG
+					os_printf("DHCP is set\n");
+				#endif
 			} else {
 				#ifdef DEBUG
 					os_printf("DHCP is NOT set\n");
@@ -682,9 +791,10 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				clientConf.dhcp = 0;
 				getValueOfKey("ip", sizeof(clientConf.ip), data, clientConf.ip);
 				getValueOfKey("net", sizeof(clientConf.netmask), data, clientConf.netmask);
-				getValueOfKey("gw", sizeof(clientConf.gw), data, clientConf.gw);
 				getValueOfKey("dn1", sizeof(clientConf.dns1), data, clientConf.dns1);
 				getValueOfKey("dn2", sizeof(clientConf.dns2), data, clientConf.dns2);
+
+				getValueOfKey("gw", sizeof(clientConf.gw), data, clientConf.gw);
 			}
 			clientConf.configsaved = 1;
 			os_printf("\n");
@@ -719,7 +829,15 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			if(getValueOfKey("mqs", sizeof(tempQOS), data, tempQOS) <= 0){
 				mqConf.qos = 1;
 			} else {
-				mqConf.qos = atoi(tempQOS);
+
+				int qost = atoi(tempQOS);
+
+				if(qost >= 0 && qost <= 2){
+					mqConf.qos = atoi(tempQOS);
+				} else {
+					mqConf.qos = 1;
+				}
+
 			}
 
 			if(getValueOfKey("int", sizeof(tempInterval), data, tempInterval) <= 0){
@@ -795,7 +913,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			if(errCount > 0){
 				#ifdef DEBUG
 					os_printf("Err Count: %d\n", errCount);
-
+				#endif
 					pwm_write(50,0);
 
 					//write to display - E001;
@@ -809,12 +927,15 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			    	os_timer_setfn(&errorInputRed, &errorConfigRed, 0);
 			    	os_timer_arm(&errorInputRed, 5000, 0);
 
-				#endif
+
 
 			} else {
 
 				errCount = 0;
-				startMode();
+
+				espconn_regist_sentcb(ptrespconn, sta_noWifi_cb);
+				espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
+				//startMode();
 			}
 
 		}
@@ -982,13 +1103,12 @@ void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
 		#endif
 
 		if(count >= 1000000){
-			#ifdef DEBUG
-				os_printf("DIFF: %d us\nRESET\n", count);
-			#endif
 		    if(wipe_flash(DELALLCONF) == 0){
 
+		    	os_timer_disarm(&wifiErrorLedTimer);
 		    	os_timer_disarm(&ppmMaxLed);
 		    	os_timer_disarm(&SendDataTimer);
+		    	os_timer_disarm(&wifiConnCheck);
 
 		    	os_printf("\n");
 
@@ -1075,7 +1195,6 @@ void ICACHE_FLASH_ATTR startMode(void){
 	pwm_write(50,50);
 
 	int mode = isClient();
-	os_printf("START MODE: %d\n", mode);
 
 	switch(mode){
 	case(0):
@@ -1223,9 +1342,7 @@ void post_user_init_func(void){
 	writeNum(0b10001110, 1); //f
 	latch();
 
-	#ifdef DEBUG
-	  os_printf("\n\nStart:\n");
-	#endif
+	os_printf("\n\nStart\n");
 
 	pwm_init(freq, duty, 2, io_info);
 	pwm_write(0,0);

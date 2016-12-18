@@ -100,11 +100,11 @@ void ICACHE_FLASH_ATTR WIFI_Connect(WifiCallback cb)
 	os_printf("(7) - Read gateway from flash: %s\n###\n", wifiClientConf.gw);
   #endif
 
-  iptrue = strintIPtoInt(wifiClientConf.ip, ipint);
-  subnettrue = strintIPtoInt(wifiClientConf.netmask, subnetint);
-  gwtrue = strintIPtoInt(wifiClientConf.gw, gw);
-  dns1true = strintIPtoInt(wifiClientConf.dns1, dns1);
-  dns2true = strintIPtoInt(wifiClientConf.dns2, dns2);
+	iptrue = strintIPtoInt(wifiClientConf.ip, ipint);
+	subnettrue = strintIPtoInt(wifiClientConf.netmask, subnetint);
+	gwtrue = strintIPtoInt(wifiClientConf.gw, gw);
+	dns1true = strintIPtoInt(wifiClientConf.dns1, dns1);
+	dns2true = strintIPtoInt(wifiClientConf.dns2, dns2);
 
 	#ifdef DEBUG
 		os_printf("###\nStatic IP Config: \nIP:%d.%d.%d.%d\n", ipint[0], ipint[1], ipint[2], ipint[3]);
@@ -113,11 +113,11 @@ void ICACHE_FLASH_ATTR WIFI_Connect(WifiCallback cb)
 		os_printf("DHCP is: %d\n###\n", wifiClientConf.dhcp);
 	  #endif
 
-  //prepare SSID and Passwd of the router
-  struct station_config stationConf;
-  os_bzero(&stationConf, sizeof(struct station_config));
-  os_memcpy(stationConf.ssid, wifiClientConf.ssid, sizeof(wifiClientConf.ssid));
-  os_memcpy(stationConf.password, wifiClientConf.password, sizeof(wifiClientConf.password));
+	//prepare SSID and Passwd of the router
+	struct station_config stationConf;
+	os_bzero(&stationConf, sizeof(struct station_config));
+	os_memcpy(stationConf.ssid, wifiClientConf.ssid, sizeof(wifiClientConf.ssid));
+	os_memcpy(stationConf.password, wifiClientConf.password, sizeof(wifiClientConf.password));
 
   //Setting up wifi
   wifi_station_set_config(&stationConf);

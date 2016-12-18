@@ -42,6 +42,12 @@ struct MQTTServer {
 	uint32 sendinterval; //in sek
 };
 
+//mqtt
+static void ICACHE_FLASH_ATTR mqttConnectedCb(uint32_t *args);
+static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args);
+static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args);
+static void ICACHE_FLASH_ATTR wifiConnectCb(uint8_t status);
+
 void ICACHE_FLASH_ATTR sta_init(void);
 static char getValueOfKey(char *key, unsigned char maxlen, char *str, char *retval);
 int ICACHE_FLASH_ATTR isClient();
@@ -51,10 +57,7 @@ LOCAL void timeCounter(void *arg);
 int ICACHE_FLASH_ATTR wipe_flash(int delconf);
 void ICACHE_FLASH_ATTR startMode(void);
 uint8 ICACHE_FLASH_ATTR pwm_write(uint8 r, uint8 g);
-static void ICACHE_FLASH_ATTR mqttConnectedCb(uint32_t *args);
-static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args);
-static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args);
-static void ICACHE_FLASH_ATTR wifiConnectCb(uint8_t status);
+
 void ICACHE_FLASH_ATTR send_data_cb(void *arg);
 char* replace(const char *str, const char *oldstr, const char *newstr, int *count);
 void ICACHE_FLASH_ATTR initSendTimer(void);
@@ -64,3 +67,5 @@ void ICACHE_FLASH_ATTR writeNum(int num, bool custom);
 void ICACHE_FLASH_ATTR latch(void);
 void ICACHE_FLASH_ATTR blink_led_red(void *arg);
 LOCAL void ICACHE_FLASH_ATTR mdns_init();
+void ICACHE_FLASH_ATTR blink_conf_err_led(void *arg);
+void ICACHE_FLASH_ATTR check_wifi_stat(void *arg);
