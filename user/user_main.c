@@ -14,6 +14,7 @@
 #include "eagle_soc.h"
 #include "fast_pwm.c"
 #include "http.h"
+#include "shift-regist-7Seg.h"
 
 #define BTN_CONFIG_GPIO 0
 #define DEBUG
@@ -86,7 +87,7 @@ os_event_t user_procTaskQueue[user_procTaskQueueLen];
 uint32_t timecount;
 int timepressed = 0;
 
-//Main code function
+//receive co2 value from co2 sensor
 static void ICACHE_FLASH_ATTR loop(os_event_t *events) {
 
   int c = uart0_rx_one_char();
@@ -107,9 +108,8 @@ static void ICACHE_FLASH_ATTR loop(os_event_t *events) {
 
 	  counter++;
 	  if(counter == 9){
-		  //os_printf("ACT COUNTER: %d \n", counter);
 		  counter = 0;
-		  //os_printf("SET COUNTER TO 0, value: %d\n", counter);
+		  //start func to read co2 value
 		  resolvCO2Value();
 	  }
   }
@@ -118,6 +118,7 @@ static void ICACHE_FLASH_ATTR loop(os_event_t *events) {
   system_os_post(user_procTaskPrio, 0, 0 );
 }
 
+//read co2 value and write this to 7seg display, LED and MQTT (if enabled)
 void ICACHE_FLASH_ATTR resolvCO2Value(void){
 	uint8 y;
 	uint8 crc = 0;
@@ -134,14 +135,6 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 
 	counter = 0;
 
-	#ifdef DEBUG
-	uint8 i;
-		//os_printf("Bytes from CO2 Sensor (9Bytes)\n");
-		for(i = 0; i < 9; i++){
-			//os_printf("%d: %02x \n",i,ans[i]);
-		}
-	#endif
-
 	//build checksum
 	for(y = 1; y < 8; y++){
 		crc += ans[y];
@@ -154,6 +147,7 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 		os_printf("CRC: %d, CRCR: %d\n", ans[8], crc);
 	#endif
 
+	//if err wirte E001 to 7seg display, else send co2 to 7seg display
 	if(!(ans[0] == 0xFF && ans[1] == 0x86 && ans[8] == crc)){
 		//error
 		err = 1;
@@ -168,10 +162,12 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 
 		uint32 ledR, ledG;
 
+		//calculate co2 value from two bytes
 		co2value = ans[2]*256 + ans[3];
 
 		os_printf("CO2: %d\n", co2value);
 
+		//send co2 value to 7seg display
 		sendNumToDisp(co2value);
 
 		//calculate value RG (Red/Green) for RGB LED
@@ -225,17 +221,12 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 
 	}
 
+	//if mqtt disabled, do nothing, else send value to mqtt server
 	if(onlyCO2 == 1){
-		#ifdef DEBUG
-			//os_printf("CO2 ONLY\n");
-		#endif
 
 		err = 0;
 
 	} else {
-		#ifdef DEBUG
-			//os_printf("MQTT ONLY\n");
-		#endif
 
 		int len = 0;
 
@@ -266,6 +257,7 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 	}
 }
 
+//timer for red blink(if co2 value is more then ppm max (default 2400))
 void ICACHE_FLASH_ATTR blink_led_red(void *arg){
 
 	//sed led to red;
@@ -279,6 +271,7 @@ void ICACHE_FLASH_ATTR blink_led_red(void *arg){
 
 }
 
+//start as co2 sensor only (disply co2 value to 7seg)
 void ICACHE_FLASH_ATTR startCo2only(void){
 	#ifdef DEBUG
 		os_printf("Start co2 only\n");
@@ -306,8 +299,10 @@ void ICACHE_FLASH_ATTR startCo2only(void){
 
 }
 
+//start as ap for configuration
 void ICACHE_FLASH_ATTR startAPMode(void) {
 
+	//set name of wifi
 	char const ssid_str[32] = "CO2.box";
 
 	wifi_set_opmode(2);
@@ -336,6 +331,7 @@ void ICACHE_FLASH_ATTR startAPMode(void) {
 
 }
 
+//connect to wifi and send co2 value to a mqtt server
 void ICACHE_FLASH_ATTR startClient(void){
 	#ifdef DEBUG
 		os_printf("Start client\n");
@@ -343,6 +339,7 @@ void ICACHE_FLASH_ATTR startClient(void){
 
 	struct MQTTServer mqttInfo;
 
+	//delete co2 struct configuration from flash
     wipe_flash(2);
     onlyCO2 = 0;
 
@@ -374,6 +371,7 @@ void ICACHE_FLASH_ATTR startClient(void){
 		MQTT_InitClient(&mqttClient, mqConf.clientid, 0, 0, 120, 1);
 	}
 
+	//registr mqtt callback functions
 	MQTT_InitLWT(&mqttClient, "/lwt", "offline", 0, 0);
 	MQTT_OnConnected(&mqttClient, mqttConnectedCb);
 	MQTT_OnDisconnected(&mqttClient, mqttDisconnectedCb);
@@ -381,6 +379,7 @@ void ICACHE_FLASH_ATTR startClient(void){
 
 	WIFI_Connect(wifiConnectCb);
 
+	//enable timer for check wifi connection(10sek)
 	os_timer_disarm(&wifiConnCheck);
 	os_timer_setfn(&wifiConnCheck, &check_wifi_stat, 0);
 	os_timer_arm(&wifiConnCheck, 10*1000, 1); //10sec
@@ -388,10 +387,25 @@ void ICACHE_FLASH_ATTR startClient(void){
     //Start os task
     system_os_task(loop, user_procTaskPrio,user_procTaskQueue, user_procTaskQueueLen);
     system_os_post(user_procTaskPrio, 0, 0 );
-	initSendTimer();
+
+    //enable timer for send data
+    initSendTimer();
 
 }
 
+//timer for send mqtt data and check co2
+void ICACHE_FLASH_ATTR initSendTimer(void){
+
+	os_timer_disarm(&SendDataTimer);
+	os_timer_setfn(&SendDataTimer, &send_data_cb, 0);
+	os_timer_arm(&SendDataTimer, sendinterval*1000, 1);
+
+	#ifdef DEBUG
+		os_printf("interval was set to %ld s.\n", sendinterval);
+	#endif
+}
+
+//callback if wifi is connected
 static void ICACHE_FLASH_ATTR wifiConnectCb(uint8_t status)
 {
   if (status == STATION_GOT_IP) {
@@ -401,7 +415,8 @@ static void ICACHE_FLASH_ATTR wifiConnectCb(uint8_t status)
   }
 }
 
-static char getValueOfKey(char *key, unsigned char maxlen, char *str, char *retval)
+//function to parse GET request
+static char ICACHE_FLASH_ATTR getValueOfKey(char *key, unsigned char maxlen, char *str, char *retval)
 {
 	unsigned char found = 0;
 	char *keyptr = key;
@@ -453,27 +468,19 @@ static char getValueOfKey(char *key, unsigned char maxlen, char *str, char *retv
 	return found;
 }
 
-void ICACHE_FLASH_ATTR initSendTimer(void){
-
-	os_timer_disarm(&SendDataTimer);
-	os_timer_setfn(&SendDataTimer, &send_data_cb, 0);
-	os_timer_arm(&SendDataTimer, sendinterval*1000, 1);
-
-	#ifdef DEBUG
-		os_printf("interval was set to %ld s.\n", sendinterval);
-	#endif
-}
-
+//callback function if wifi client reconnected (AP mode). debug function
 static void ICACHE_FLASH_ATTR sta_mode_recon_cb(void *arg, sint8 err)
 {
     os_printf("STA Mode - Client reconnected\r\n");
 }
 
+//callback function if wifi client disconnected (AP mode). debug funtion
 static void ICACHE_FLASH_ATTR sta_mode_discon_cb(void *arg)
 {
     os_printf("STA Mode - Client disconnected\r\n");
 }
 
+//callback function if mqtt connected
 static void ICACHE_FLASH_ATTR mqttConnectedCb(uint32_t *args)
 {
 	mIsConnected = 1;
@@ -489,6 +496,7 @@ static void ICACHE_FLASH_ATTR mqttConnectedCb(uint32_t *args)
 
 }
 
+//timer function if wifi or mqtt configuration not correct(blink orage/red)
 void ICACHE_FLASH_ATTR blink_conf_err_led(void *arg){
 	//sed led to red;
 	if(setLedOra == 0){
@@ -501,6 +509,7 @@ void ICACHE_FLASH_ATTR blink_conf_err_led(void *arg){
 
 }
 
+//timer function to check wifi connection
 void ICACHE_FLASH_ATTR check_wifi_stat(void *arg){
 	uint8 wstat = wifi_station_get_connect_status();
 
@@ -546,6 +555,7 @@ void ICACHE_FLASH_ATTR check_wifi_stat(void *arg){
 	}
 }
 
+//callback function to send request to co2 sensor
 void ICACHE_FLASH_ATTR send_data_cb(void *arg){
 
 	//send requiest to co2 sensor
@@ -553,6 +563,7 @@ void ICACHE_FLASH_ATTR send_data_cb(void *arg){
 
 }
 
+//callback function if mqtt is disconnected
 static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args){
 
 	mIsConnected = 0;
@@ -563,6 +574,7 @@ static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args){
 	#endif
 }
 
+//callback function if the co2 value was published to mqtt server
 static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32 *args)
 {
 	MQTT_Client* client = (MQTT_Client*)args;
@@ -571,24 +583,31 @@ static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32 *args)
 	#endif
 }
 
+//callback function if answer was send to the client (AP mode/configuration)
 void ICACHE_FLASH_ATTR tcpDisconnectCb(void *arg){
 
 	#ifdef DEBUG
 		os_printf("SEND DATA WAS OK2\n");
 	#endif
+
+	//disconnect web browser from sensor
 	espconn_disconnect(arg);
 
 	startMode();
 }
 
+//callback function if answer was send to the client (AP mode/configuration)2
 void ICACHE_FLASH_ATTR sta_send_cb(void *arg){
 
 	#ifdef DEBUG
 		os_printf("SEND DATA WAS OK\n");
 	#endif
+
+
 	espconn_disconnect(arg);
 }
 
+//function to set timer to disconnect tcp connection (Port 80)
 void ICACHE_FLASH_ATTR sta_noWifi_cb(void *arg){
 
 	#ifdef DEBUG
@@ -600,7 +619,7 @@ void ICACHE_FLASH_ATTR sta_noWifi_cb(void *arg){
 	os_timer_arm(&tcpDisconnect, 20, 0);
 }
 
-
+//function to display config warning setting (Led red)
 void ICACHE_FLASH_ATTR errorConfigRed(void *arg){
 
 	os_timer_disarm(&errorInputRed);
@@ -614,6 +633,7 @@ void ICACHE_FLASH_ATTR errorConfigRed(void *arg){
 	latch();
 }
 
+//callback function, if receive request on port tcp 80 (configuration website)
 static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned short len){
 
 	//struct espconn *ptrespconn = (struct espconn *)arg;
@@ -628,11 +648,12 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 		os_printf("###### DStop ######\r\n");
 	#endif
 
-
+	//send configuration website
 	if(os_strncmp(data, "GET / ", 6) == 0){
 		espconn_send(ptrespconn, (uint8 *)formHtml, os_strlen(formHtml));
 	}
 
+	//parse configuration received from client
 	if(os_strncmp(data, "GET /?int", 9) == 0){
 
 		char wifiON[2];
@@ -641,33 +662,35 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 		char temppmmax[4];
 		char tempbrit[1];
 
+		//check advanced co2 sensor config
+		//if not set, than set default
 		if(getValueOfKey("adv", sizeof(tempAdvcd), data, tempAdvcd) <= 0){
-			//not set
+
 			ledConf.ppmmin = PPMMIN;
 			ledConf.ppmmax = PPMMAX;
 
 		} else {
 
+			//if advanced config is set, but ppm min is empty, than set default
 			if(getValueOfKey("mmn", sizeof(tempppmmin), data, tempppmmin) <= 0){
 				ledConf.ppmmin = PPMMIN;
 
 			} else {
 				ledConf.ppmmin = atoi(tempppmmin);
-
 				if(ledConf.ppmmin <= 0){
 					ledConf.ppmmin = PPMMIN;
+				}
+				if(ledConf.ppmmin >=5000){
+					ledConf.ppmmin = 5000;
 				}
 			}
 
 			if(getValueOfKey("mmx", sizeof(temppmmax), data, temppmmax) <= 0){
 				ledConf.ppmmax = PPMMAX;
-
 			} else {
 				ledConf.ppmmax = atoi(temppmmax);
 				if(ledConf.ppmmax <= 0){
 					ledConf.ppmmax = PPMMAX;
-
-					//os_printf("ADVAN SET, MAX SET\n");
 				}
 				if(ledConf.ppmmax >= 5000){
 					ledConf.ppmmax = 5000;
@@ -693,14 +716,16 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			errCount++;
 		}
 
-		if(getValueOfKey("wS", 2, data, wifiON) <= 0) { //check if wifi & mqtt settings are activated
+		//check if wifi & mqtt settings are activated
+		if(getValueOfKey("wS", 2, data, wifiON) <= 0) {
 			//wifi is not set
 
 			#ifdef DEBUG
 				os_printf("CO2 only\n");
 			#endif
 
-			if(getValueOfKey("int", sizeof(tempInterval), data, tempInterval) > 0){ // refresh interval
+			// refresh interval
+			if(getValueOfKey("int", sizeof(tempInterval), data, tempInterval) > 0){
 				co2Conf.interval = atoi(tempInterval);
 			} else {
 				//set default
@@ -712,7 +737,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				os_printf("CO2 Interval set to: %ld sec.\n", co2Conf.interval);
 			#endif
 
-			//unsigned int getMqttSett = writeCO2Setting(&co2Conf);
+			//write co2 config to flash
 			spi_flash_erase_sector(CO2CONFADDR);
 			unsigned int c = spi_flash_write(CO2CONFADDR*SPI_FLASH_SEC_SIZE, (uint32*)&co2Conf, sizeof(struct co2sen));
 
@@ -724,6 +749,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				errCount++;
 			} else {
 
+				// delete mqtt configuration from flash
 				int wstat = wipe_flash(DELWIFIMQTTCONF);
 				if(wstat == 0){
 					#ifdef DEBUG
@@ -753,6 +779,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			}
 
 		} else {
+
 			//wifi is set
 			#ifdef DEBUG
 				os_printf("Wifi and MQTT was set\n");
@@ -763,7 +790,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			char tempDhcp[2]; // temp char for dhcp setting (on/off)
 			char tempAuth[2]; // temp char for auth setting (on/off)
 
-
+			//convert wifi name and write to clientconf construct
 			if(getValueOfKey("wf", sizeof(clientConf.ssid), data, clientConf.ssid) <= 0){
 				#ifdef DEBUG
 					os_printf("Value of SSID not correct: %s\n", clientConf.ssid);
@@ -771,6 +798,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				errCount++;
 			}
 
+			//convert wifi pass from GET request
 			if(getValueOfKey("ps", sizeof(clientConf.password), data, clientConf.password) <= 0){
 				#ifdef DEBUG
 					os_printf("Value of WIFI Pass not correct: %s\n", clientConf.password);
@@ -778,6 +806,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				errCount++;
 			}
 
+			//check static ip or dhcp
 			if(getValueOfKey("ipc", sizeof(tempDhcp), data, tempDhcp) <= 0){
 				clientConf.dhcp = 1;
 				#ifdef DEBUG
@@ -788,6 +817,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 					os_printf("DHCP is NOT set\n");
 				#endif
 
+				//if static ip, convert values from GET request and write
 				clientConf.dhcp = 0;
 				getValueOfKey("ip", sizeof(clientConf.ip), data, clientConf.ip);
 				getValueOfKey("net", sizeof(clientConf.netmask), data, clientConf.netmask);
@@ -799,6 +829,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 			clientConf.configsaved = 1;
 			os_printf("\n");
 
+			//mqtt client id
 			if(getValueOfKey("mId", sizeof(mqConf.clientid), data, mqConf.clientid) <= 0){
 				#ifdef DEBUG
 					os_printf("Value of MQTT ID not correct: %s\n", mqConf.clientid);
@@ -806,6 +837,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				errCount++;
 			}
 
+			//mqtt server address or ip
 			if(getValueOfKey("mad", sizeof(mqConf.server), data, mqConf.server) <= 0){
 				#ifdef DEBUG
 					os_printf("Value of MQTT Server not correct: %s\n", mqConf.server);
@@ -813,6 +845,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				errCount++;
 			}
 
+			//mqtt topic name
 			if(getValueOfKey("mtpc", sizeof(mqConf.topic), data, mqConf.topic) <= 0){
 				#ifdef DEBUG
 					os_printf("Value of MQTT Topic not correct: %s\n", mqConf.topic);
@@ -826,6 +859,8 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				topicstr = replace(mqConf.topic, "%2F", "/", &rpl);
 				strcpy(mqConf.topic, topicstr);
 			}
+
+			//mqtt QoS
 			if(getValueOfKey("mqs", sizeof(tempQOS), data, tempQOS) <= 0){
 				mqConf.qos = 1;
 			} else {
@@ -840,18 +875,21 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 			}
 
+			//mqtt send data interval == co2.sendinterval
 			if(getValueOfKey("int", sizeof(tempInterval), data, tempInterval) <= 0){
 				mqConf.sendinterval = 120;
 			} else {
 				mqConf.sendinterval = atoi(tempInterval);
 			}
 
+			//mqtt port (default 1833)
 			if(getValueOfKey("mprt", sizeof(tempport), data, tempport) <= 0){
 				mqConf.port = 1883;
 			} else {
 				mqConf.port = atoi(tempport);
 			}
 
+			//check if mqtt auth is enabled
 			if(getValueOfKey("ath", sizeof(tempAuth), data, tempAuth) <= 0){
 				//without auth
 				#ifdef DEBUG
@@ -865,6 +903,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				#endif
 				mqConf.auth = 1;
 
+				//mqtt user
 				if(getValueOfKey("mus", sizeof(mqConf.user), data, mqConf.user) <= 0){
 					#ifdef DEBUG
 						os_printf("Value of MQTT User not correct: %s\n", mqConf.user);
@@ -872,6 +911,7 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 					errCount++;
 				}
 
+				//mqtt pass
 				if(getValueOfKey("mps", sizeof(mqConf.password), data, mqConf.password) <= 0){
 					#ifdef DEBUG
 						os_printf("Value of MQTT Pass not correct: %s\n", mqConf.password);
@@ -910,6 +950,8 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 				pwm_write(0,50);
 			}
 
+			//if not err in config start as a wifi client and connect to mqtt server
+			//start is defined in callback function tcpDisconnectCb
 			if(errCount > 0){
 				#ifdef DEBUG
 					os_printf("Err Count: %d\n", errCount);
@@ -935,14 +977,14 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 
 				espconn_regist_sentcb(ptrespconn, sta_noWifi_cb);
 				espconn_send(ptrespconn, (uint8 *)noWifiHtml, os_strlen(noWifiHtml));
-				//startMode();
 			}
 
 		}
 	}
 }
 
-char* replace(const char *str, const char *oldstr, const char *newstr, int *count){
+//function to replace html "%2" to "/"
+char* ICACHE_FLASH_ATTR replace(const char *str, const char *oldstr, const char *newstr, int *count){
    const char *tmp = str;
    char *result;
    int   found = 0;
@@ -978,6 +1020,7 @@ char* replace(const char *str, const char *oldstr, const char *newstr, int *coun
    return result;
 }
 
+//function to registr connection callback functions (http)
 static void ICACHE_FLASH_ATTR sta_connect_cb(void *arg){
 
 	struct espconn *pesp_conn = arg;
@@ -997,6 +1040,7 @@ static void ICACHE_FLASH_ATTR sta_connect_cb(void *arg){
 
 }
 
+//define tcp connection (http)
 void ICACHE_FLASH_ATTR sta_init(void){
 
 	#ifdef DEBUG
@@ -1011,6 +1055,7 @@ void ICACHE_FLASH_ATTR sta_init(void){
     espconn_accept(&esp_conn);
 }
 
+//check mode: 0 - co2 only (mqtt,wifi are disabled), 1 - client mode (wifi, mqtt are enabled), 2 - AP mode (configuration)
 int ICACHE_FLASH_ATTR isClient(){
 	//Read config from flash
 	struct wCLIENTCFG wConfAct;
@@ -1049,51 +1094,51 @@ int ICACHE_FLASH_ATTR isClient(){
 	}
 }
 
-// Инициализация кнопки CONFMODE (GPIO0)
+// initialise reset button
 void BtnInit() {
-	// Уст. GPIO 0 на ввод-вывод
+	// set GPIO 0
 	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO0_U, FUNC_GPIO0);
-	// Вкл. подтяг. резистор
+	// enable pullup resitor
 	PIN_PULLUP_EN(PERIPHS_IO_MUX_GPIO0_U);
-	// Откл. глоб.прерываний
+	// disable globar interrupt
 	ETS_GPIO_INTR_DISABLE();
-	// Подкл. процедуры обраб. прерываний
+	// attach interrupt function
 	ETS_GPIO_INTR_ATTACH(input_intr_handler, NULL);
 	GPIO_DIS_OUTPUT(BTN_CONFIG_GPIO);
-	// Очистка статуса
+	// empty status
 	GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(2));
-	// Вкл.прерываний
+	// enable interrupt
 	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_ANYEDGE);
-	// Вкл.глоб.прерываний
+	// enable global interrupt
 	ETS_GPIO_INTR_ENABLE();
-	// Таймер
+	// timer
 	os_timer_disarm(&DebounceTimer);
 	os_timer_setfn(&DebounceTimer, &debounce_timer_cb, 0);
 }
 
-// Процедура обраб. прерываний
-LOCAL void input_intr_handler(void *arg)
-{
-	// Состояние GPIO
+//
+LOCAL void input_intr_handler(void *arg){
+	// state of GPIO
 	uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
-	// Очистка
+	// emply status
 	GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status);
-	// Откл.прерываний
+	// disable interrupt
 	ETS_GPIO_INTR_DISABLE();
 	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_DISABLE);
-	// Вкл.прерываний
+	// enable interrupt
 	ETS_GPIO_INTR_ENABLE();
-	// Установка таймера
+	// set timer
 	os_timer_arm(&DebounceTimer, 40, 0);
 }
 
-// Выполняется в случае нажатия кнопки CONFMODE
-void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
-{
+// button reset pressed
+void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg){
+	//disable globar interrupt
 	ETS_GPIO_INTR_DISABLE();
 	gpio_pin_intr_state_set(GPIO_ID_PIN(BTN_CONFIG_GPIO), GPIO_PIN_INTR_ANYEDGE);
 	ETS_GPIO_INTR_ENABLE();
 
+	//start if button was pressed any age (hight or low)
 	if(timepressed){
 		timepressed = 0;
 		uint32 count = system_get_time() - timecount;
@@ -1102,6 +1147,7 @@ void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
 			os_printf("DIFF: %d us\n", count);
 		#endif
 
+		//check time between button on/off, if more 1 sec start delete settings in flash
 		if(count >= 1000000){
 		    if(wipe_flash(DELALLCONF) == 0){
 
@@ -1132,6 +1178,7 @@ void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg)
 	}
 }
 
+//delete configuration from flash
 int ICACHE_FLASH_ATTR wipe_flash(int delconf){
 	if(delconf == 0){ //0 -delete all, 1 - delete wifi and mqtt, 2 - delete co2sens
 
@@ -1187,6 +1234,7 @@ int ICACHE_FLASH_ATTR wipe_flash(int delconf){
 	return 0;
 }
 
+//function to check start mode (run isClient func)
 void ICACHE_FLASH_ATTR startMode(void){
 	#ifdef DEBUG
 		os_printf("Start Mode Check \n");
@@ -1209,6 +1257,7 @@ void ICACHE_FLASH_ATTR startMode(void){
 	}
 }
 
+//function to write LED colors - only red and green
 uint8 ICACHE_FLASH_ATTR pwm_write(uint8 r, uint8 g){
 
 	uint32 uson = 256*256;
@@ -1230,108 +1279,15 @@ uint8 ICACHE_FLASH_ATTR pwm_write(uint8 r, uint8 g){
 	return 0;
 }
 
+//init shift registr
 void ICACHE_FLASH_ATTR ShtRegInit(void){
 	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, FUNC_GPIO14); //14 - DS
 	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12); //12 - ST_CP - latch
 	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_GPIO13); //13 - SH_CP - clock
 }
 
-void ICACHE_FLASH_ATTR strob(void){
-	gpio_output_set(BIT13, 0, BIT13, 0); //high
-	gpio_output_set(0, BIT13, BIT13, 0); //low
-}
-
-void ICACHE_FLASH_ATTR latch(void){
-	gpio_output_set(BIT12, 0, BIT12, 0); //high
-	gpio_output_set(0, BIT12, BIT12, 0); //low
-}
-
-void ICACHE_FLASH_ATTR setOn(void){
-	gpio_output_set(0, BIT14, BIT14, 0); //low
-	strob();
-}
-
-void ICACHE_FLASH_ATTR setOff(void){
-	gpio_output_set(BIT14, 0, BIT14, 0); //high
-	strob();
-}
-
-void ICACHE_FLASH_ATTR writeNum(int num, bool custom){
-
-	int num0 = 0b11111100;
-	int num1 = 0b01100000;
-	int num2 = 0b11011010;
-	int num3 = 0b11110010;
-	int num4 = 0b01100110;
-	int num5 = 0b10110110;
-	int num6 = 0b10111110;
-	int num7 = 0b11100000;
-	int num8 = 0b11111110;
-	int num9 = 0b11110110;
-
-	if(custom){
-		//write custom int to display
-		// 0b11101100 - N;
-		// 0b10011100 - C;
-		// 0b10001110 - F;
-		// 0b10011110 - E
-
-	} else {
-		switch(num){
-			case 0: num = num0;break;
-			case 1: num = num1;break;
-			case 2: num = num2;break;
-			case 3: num = num3;break;
-			case 4: num = num4;break;
-			case 5: num = num5;break;
-			case 6: num = num6;break;
-			case 7: num = num7;break;
-			case 8: num = num8;break;
-			case 9: num = num9;break;
-		}
-	}
-
-	int i;
-	for(i = 0;i<8;i++){
-		if ((num&(1<<i)) == 0){
-			setOff();
-			latch();
-
-		} else {
-			setOn();
-			latch();
-		}
-	}
-
-};
-
-void ICACHE_FLASH_ATTR sendNumToDisp(uint32 num){
-
-	if(num < 1000){
-		writeNum(0b00000000,1);
-		writeNum(0b00000000,1);
-		writeNum(0b00000000,1);
-		writeNum(0b00000000,1);
-	}
-    int temp, factor = 1;
-
-    temp = num;
-    while (temp)
-    {
-      temp = temp / 10;
-      factor = factor * 10;
-    }
-
-    while (factor>1)
-    {
-      factor = factor / 10;
-      writeNum(num / factor, 0);
-      num = num % factor;
-    }
-    latch();
-}
-
-void post_user_init_func(void){
+//start after system init func
+void ICACHE_FLASH_ATTR post_user_init_func(void){
 	BtnInit(); //init button
 	ShtRegInit(); //init pins for display
 
