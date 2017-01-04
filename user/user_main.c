@@ -14,7 +14,6 @@
 #include "eagle_soc.h"
 #include "fast_pwm.c"
 #include "http.h"
-#include "shift-regist-7Seg.h"
 
 #define BTN_CONFIG_GPIO 0
 #define DEBUG
@@ -151,13 +150,6 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 	if(!(ans[0] == 0xFF && ans[1] == 0x86 && ans[8] == crc)){
 		//error
 		err = 1;
-
-		//write to display - E001;
-		writeNum(0b10011110, 1); // - E
-		writeNum(0,0);
-		writeNum(0,0);
-		writeNum(1,0);
-		latch();
 	} else {
 
 		uint32 ledR, ledG;
@@ -166,9 +158,6 @@ void ICACHE_FLASH_ATTR resolvCO2Value(void){
 		co2value = ans[2]*256 + ans[3];
 
 		os_printf("CO2: %d\n", co2value);
-
-		//send co2 value to 7seg display
-		sendNumToDisp(co2value);
 
 		//calculate value RG (Red/Green) for RGB LED
 	    if(co2value <= ledConf.ppmmin){
@@ -521,13 +510,6 @@ void ICACHE_FLASH_ATTR check_wifi_stat(void *arg){
 			os_printf("Error wifi connection\n");
 		#endif
 
-		//write to display - E005;
-		writeNum(0b10011110, 1); // - E
-		writeNum(0,0);
-		writeNum(0,0);
-		writeNum(5,0);
-		latch();
-
 		os_timer_disarm(&wifiErrorLedTimer);
 		os_timer_setfn(&wifiErrorLedTimer, &blink_conf_err_led, 0);
 		os_timer_arm(&wifiErrorLedTimer, 200, 1); //2sec
@@ -537,13 +519,6 @@ void ICACHE_FLASH_ATTR check_wifi_stat(void *arg){
 		#ifdef DEBUG
 			os_printf("Mqtt server not connected\n");
 		#endif
-
-		//write to display - E005;
-		writeNum(0b10011110, 1); // - E
-		writeNum(0,0);
-		writeNum(0,0);
-		writeNum(6,0);
-		latch();
 
 		os_timer_disarm(&wifiErrorLedTimer);
 		os_timer_setfn(&wifiErrorLedTimer, &blink_conf_err_led, 0);
@@ -624,13 +599,6 @@ void ICACHE_FLASH_ATTR errorConfigRed(void *arg){
 
 	os_timer_disarm(&errorInputRed);
 	pwm_write(50,50);
-
-	//write init display
-	writeNum(0b11101100, 1); //n
-	writeNum(0,0); // 0
-	writeNum(0b10011100, 1); //c
-	writeNum(0b10001110, 1); //f
-	latch();
 }
 
 //callback function, if receive request on port tcp 80 (configuration website)
@@ -763,13 +731,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 					os_printf("Wipe MQTT and Wifi config error\n");
 
 					pwm_write(50,0);
-
-					//write to display - E001;
-					writeNum(0b10011110, 1); // - E
-					writeNum(0,0);
-					writeNum(0,0);
-					writeNum(4,0);
-					latch();
 
 			    	os_timer_disarm(&errorInputRed);
 			    	os_timer_setfn(&errorInputRed, &errorConfigRed, 0);
@@ -957,13 +918,6 @@ static void ICACHE_FLASH_ATTR sta_mode_recv_cb(void *arg, char *data, unsigned s
 					os_printf("Err Count: %d\n", errCount);
 				#endif
 					pwm_write(50,0);
-
-					//write to display - E001;
-					writeNum(0b10011110, 1); // - E
-					writeNum(0,0);
-					writeNum(0,0);
-					writeNum(3,0);
-					latch();
 
 			    	os_timer_disarm(&errorInputRed);
 			    	os_timer_setfn(&errorInputRed, &errorConfigRed, 0);
@@ -1158,13 +1112,6 @@ void ICACHE_FLASH_ATTR debounce_timer_cb(void *arg){
 
 		    	os_printf("\n");
 
-		    	//write init display
-		    	writeNum(0b11101100, 1); //n
-		    	writeNum(0,0); // 0
-		    	writeNum(0b10011100, 1); //c
-		    	writeNum(0b10001110, 1); //f
-		    	latch();
-
 		    	startMode();
 		    }
 		}
@@ -1279,24 +1226,9 @@ uint8 ICACHE_FLASH_ATTR pwm_write(uint8 r, uint8 g){
 	return 0;
 }
 
-//init shift registr
-void ICACHE_FLASH_ATTR ShtRegInit(void){
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, FUNC_GPIO14); //14 - DS
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12); //12 - ST_CP - latch
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_GPIO13); //13 - SH_CP - clock
-}
-
 //start after system init func
 void ICACHE_FLASH_ATTR post_user_init_func(void){
 	BtnInit(); //init button
-	ShtRegInit(); //init pins for display
-
-	//write init display
-	writeNum(0b11101100, 1); //n
-	writeNum(0,0); // 0
-	writeNum(0b10011100, 1); //c
-	writeNum(0b10001110, 1); //f
-	latch();
 
 	os_printf("\n\nStart\n");
 
