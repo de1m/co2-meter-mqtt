@@ -1231,6 +1231,7 @@ void ICACHE_FLASH_ATTR post_user_init_func(void){
 	BtnInit(); //init button
 
 	os_printf("\n\nStart\n");
+	os_printf("SDK version: %s \n", system_get_sdk_version());
 
 	pwm_init(freq, duty, 2, io_info);
 	pwm_write(0,0);
