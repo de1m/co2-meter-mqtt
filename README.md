@@ -1,6 +1,6 @@
 # CO2 Meter (mqtt)
 
-![main-image](raw.githubusercontent.com/de1m/co2-meter-mqtt/master/co2-lampe-main-crop.jpg)
+![main-image](https://github.com/de1m/co2-meter-mqtt/blob/master/co2-lampe-main-crop.jpg)
 
 ## Description
 
